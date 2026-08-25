@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>画像リサイズツール</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --text-1: #1a1a1a;
+    --text-2: #555555;
+    --text-3: #888888;
+    --accent: #2563eb;
+    --danger: #dc2626;
+    --border: #e5e5e5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text-1);
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px;
+  }
+  main {
+    width: 100%;
+    max-width: 480px;
+  }
+  h1 {
+    font-size: 16px;
+    font-weight: bold;
+    margin: 0 0 4px 0;
+  }
+  p.lead {
+    font-size: 14px;
+    color: var(--text-2);
+    margin: 0 0 24px 0;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  label {
+    display: block;
+    font-size: 14px;
+    color: var(--text-1);
+    margin-bottom: 8px;
+    font-weight: bold;
+  }
+  input[type="file"] {
+    display: block;
+    width: 100%;
+    font-size: 14px;
+  }
+  input[type="number"] {
+    display: block;
+    width: 100%;
+    padding: 8px;
+    font-size: 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: inherit;
+  }
+  .hint {
+    font-size: 12px;
+    color: var(--text-3);
+    margin-top: 8px;
+  }
+  .error {
+    color: var(--danger);
+    font-size: 14px;
+    margin-top: 8px;
+    display: none;
+  }
+  .error.show { display: block; }
+  .preview-wrap {
+    display: none;
+  }
+  .preview-wrap.show { display: block; }
+  canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  .size-compare {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .size-box {
+    flex: 1;
+    text-align: center;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+  }
+  .size-box .label {
+    font-size: 12px;
+    color: var(--text-3);
+    margin-bottom: 4px;
+    font-weight: normal;
+  }
+  .size-box .value {
+    font-size: 14px;
+    color: var(--text-1);
+    font-weight: bold;
+    overflow-wrap: break-word;
+  }
+  button {
+    width: 100%;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: bold;
+    color: #ffffff;
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:disabled {
+    background: #b6c6ee;
+    cursor: not-allowed;
+  }
+  button:not(:disabled):hover {
+    opacity: 0.9;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>画像リサイズツール</h1>
+  <p class="lead">画像を選んで幅を指定するだけで、比率を保ったまま縮小してPNGでダウンロードできます。</p>
+
+  <div class="card">
+    <label for="file-input">1. 画像を選ぶ</label>
+    <input type="file" id="file-input" accept="image/*">
+    <div class="hint" id="original-info"></div>
+  </div>
+
+  <div class="card">
+    <label for="width-input">2. 縮小後の幅（px）</label>
+    <input type="number" id="width-input" min="1" step="1" placeholder="例: 400">
+    <div class="error" id="error-msg"></div>
+  </div>
+
+  <div class="card preview-wrap" id="preview-wrap">
+    <label>3. プレビュー</label>
+    <canvas id="canvas"></canvas>
+    <div class="size-compare">
+      <div class="size-box">
+        <div class="label">元のサイズ</div>
+        <div class="value" id="before-size">-</div>
+      </div>
+      <div class="size-box">
+        <div class="label">縮小後のサイズ</div>
+        <div class="value" id="after-size">-</div>
+      </div>
+    </div>
+    <button id="download-btn" disabled>PNGでダウンロード</button>
+  </div>
+</main>
+
+<script>
+(function () {
+  const fileInput = document.getElementById('file-input');
+  const widthInput = document.getElementById('width-input');
+  const originalInfo = document.getElementById('original-info');
+  const errorMsg = document.getElementById('error-msg');
+  const previewWrap = document.getElementById('preview-wrap');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const beforeSize = document.getElementById('before-size');
+  const afterSize = document.getElementById('after-size');
+  const downloadBtn = document.getElementById('download-btn');
+
+  let currentImage = null;
+  let currentFileSize = 0;
+  let currentBlob = null;
+  let loadToken = 0;
+  let renderToken = 0;
+
+  function showError(msg) {
+    errorMsg.textContent = msg;
+    errorMsg.classList.add('show');
+  }
+
+  function clearError() {
+    errorMsg.textContent = '';
+    errorMsg.classList.remove('show');
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
+  function resetPreview() {
+    previewWrap.classList.remove('show');
+    downloadBtn.disabled = true;
+    currentBlob = null;
+  }
+
+  fileInput.addEventListener('change', function () {
+    clearError();
+    resetPreview();
+    const myToken = ++loadToken;
+    const file = fileInput.files[0];
+    if (!file) {
+      currentImage = null;
+      originalInfo.textContent = '';
+      return;
+    }
+    if (!file.type.startsWith('image/')) {
+      showError('画像ファイルを選択してください。');
+      currentImage = null;
+      originalInfo.textContent = '';
+      return;
+    }
+    const pendingFileSize = file.size;
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      if (myToken !== loadToken) return;
+      const img = new Image();
+      img.onload = function () {
+        if (myToken !== loadToken) return;
+        currentImage = img;
+        currentFileSize = pendingFileSize;
+        originalInfo.textContent = '元画像: ' + img.naturalWidth + ' x ' + img.naturalHeight + ' px（' + formatBytes(currentFileSize) + '）';
+        tryRender();
+      };
+      img.onerror = function () {
+        if (myToken !== loadToken) return;
+        showError('画像を読み込めませんでした。別のファイルを試してください。');
+        currentImage = null;
+        originalInfo.textContent = '';
+      };
+      img.src = e.target.result;
+    };
+    reader.onerror = function () {
+      if (myToken !== loadToken) return;
+      showError('ファイルを読み込めませんでした。');
+    };
+    reader.readAsDataURL(file);
+  });
+
+  widthInput.addEventListener('input', function () {
+    clearError();
+    tryRender();
+  });
+
+  function tryRender() {
+    resetPreview();
+    if (!currentImage) return;
+
+    const widthRaw = widthInput.value.trim();
+    if (widthRaw === '') return;
+
+    const targetWidth = Number(widthRaw);
+    if (!Number.isFinite(targetWidth) || targetWidth <= 0 || !Number.isInteger(targetWidth)) {
+      showError('幅は1以上の整数で入力してください。');
+      return;
+    }
+    if (targetWidth > 10000) {
+      showError('幅は10000px以下で入力してください。');
+      return;
+    }
+
+    const myRenderToken = ++renderToken;
+    const ratio = currentImage.naturalHeight / currentImage.naturalWidth;
+    const targetHeight = Math.max(1, Math.round(targetWidth * ratio));
+
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    ctx.clearRect(0, 0, targetWidth, targetHeight);
+    ctx.drawImage(currentImage, 0, 0, targetWidth, targetHeight);
+
+    canvas.toBlob(function (blob) {
+      if (myRenderToken !== renderToken) return;
+      if (!blob) {
+        showError('画像の生成に失敗しました。');
+        return;
+      }
+      currentBlob = blob;
+      beforeSize.textContent = formatBytes(currentFileSize);
+      afterSize.textContent = formatBytes(blob.size);
+      previewWrap.classList.add('show');
+      downloadBtn.disabled = false;
+    }, 'image/png');
+  }
+
+  downloadBtn.addEventListener('click', function () {
+    if (!currentBlob) return;
+    const url = URL.createObjectURL(currentBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'resized.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  });
+})();
+</script>
+</body>
+</html>
